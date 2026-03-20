@@ -1,5 +1,6 @@
-// Netlify Function: AI Investment Advisor via Claude API
-// Requires ANTHROPIC_API_KEY in environment variables
+// Netlify Function: AI Investment Advisor via Google Gemini API (FREE)
+// Requires GEMINI_API_KEY in environment variables
+// Get free key at: https://ai.google.dev/
 export default async (request) => {
   if (request.method === 'OPTIONS') {
     return new Response('', {
@@ -7,9 +8,9 @@ export default async (request) => {
     })
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY
+  const apiKey = process.env.GEMINI_API_KEY
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'ANTHROPIC_API_KEY not configured' }), {
+    return new Response(JSON.stringify({ error: 'GEMINI_API_KEY not configured' }), {
       status: 500,
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
     })
@@ -18,33 +19,50 @@ export default async (request) => {
   try {
     const { portfolio, lang } = await request.json()
 
-    const systemPrompt = lang === 'id'
-      ? 'Anda adalah penasihat investasi. Berikan analisis portofolio dalam Bahasa Indonesia. Gunakan format markdown dengan header yang jelas.'
-      : '你是專業投資顧問。用繁體中文分析投資組合。使用 markdown 格式，標題清楚分段。'
+    const systemPrompt = '你是專業投資顧問。用繁體中文分析投資組合，包含資產和負債。使用 markdown 格式，標題清楚分段。請提供具體、可操作的建議。'
 
-    const userPrompt = lang === 'id'
-      ? `Analisis portofolio investasi berikut dan berikan saran:\n\n${JSON.stringify(portfolio, null, 2)}\n\nMohon berikan:\n1. Ringkasan portofolio\n2. Analisis alokasi aset (rasio saham/obligasi/kas)\n3. Analisis diversifikasi\n4. Risiko utama\n5. 3-5 saran investasi spesifik`
-      : `請分析以下投資組合並提供建議：\n\n${JSON.stringify(portfolio, null, 2)}\n\n請提供：\n1. 投資組合總覽\n2. 資產配置分析（股債現金比）\n3. 分散度分析\n4. 主要風險提示\n5. 3-5 項具體投資建議`
+    const userPrompt = `請分析以下投資組合並提供建議：
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+${JSON.stringify(portfolio, null, 2)}
+
+請提供：
+1. 投資組合總覽（淨資產、資產配置）
+2. 資產配置分析（股債現金比）
+3. 負債分析（負債比、月付金壓力、利率結構）
+4. 分散度分析（市場、類型、集中度）
+5. 主要風險提示
+6. 3-5 項具體投資建議（含資產和負債管理）
+7. 每月現金流建議`
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`
+
+    const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 2000,
-        messages: [
-          { role: 'user', content: userPrompt }
-        ],
-        system: systemPrompt
+        contents: [{
+          parts: [{ text: userPrompt }]
+        }],
+        systemInstruction: {
+          parts: [{ text: systemPrompt }]
+        },
+        generationConfig: {
+          maxOutputTokens: 2048,
+          temperature: 0.7,
+        }
       })
     })
 
     const data = await res.json()
-    const advice = data.content?.[0]?.text || 'No response'
+
+    if (data.error) {
+      return new Response(JSON.stringify({ error: data.error.message || 'Gemini API error' }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+      })
+    }
+
+    const advice = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response'
 
     return new Response(JSON.stringify({ advice }), {
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
