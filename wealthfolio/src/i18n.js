@@ -59,6 +59,7 @@ export const T = {
     getAdvice: '取得 AI 分析',
     analyzing: 'AI 分析中...',
     aiNotConfigured: '請在 Netlify 設定 GEMINI_API_KEY 以啟用 AI 顧問（免費取得：ai.google.dev）',
+    aiDailyLimit: '⚠️ 今日 AI 分析已達上限（{n} 次），請明天再試。',
     ruleBasedTitle: '基本配置建議',
     stockRatio: '股票佔比',
     cashRatio: '現金/固收佔比',

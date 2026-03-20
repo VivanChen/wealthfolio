@@ -9,6 +9,29 @@ const genId = () => crypto.randomUUID?.() || Date.now().toString(36) + Math.rand
 const today = () => new Date().toISOString().slice(0, 10)
 const fmtMoney = (n, sym = '$') => `${n < 0 ? '-' : ''}${sym}${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
 const safeSheet = (name) => name.replace(/[:\\/?*[\]]/g, '_').slice(0, 31)
+
+// Simple markdown to HTML renderer
+function renderMarkdown(text) {
+  if (!text) return ''
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') // escape HTML
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+    .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+    .replace(/^\d+\. (.+)$/gm, '<li>$1</li>')
+    .replace(/^---$/gm, '<hr/>')
+    .replace(/\n{2,}/g, '</p><p>')
+    .replace(/\n/g, '<br/>')
+    .replace(/^/, '<p>').replace(/$/, '</p>')
+    .replace(/<p><h/g, '<h').replace(/<\/h(\d)><\/p>/g, '</h$1>')
+    .replace(/<p><ul>/g, '<ul>').replace(/<\/ul><\/p>/g, '</ul>')
+    .replace(/<p><hr\/><\/p>/g, '<hr/>')
+    .replace(/<p><\/p>/g, '')
+}
 const LS_KEY = 'wf_holdings'
 const LS_DIV = 'wf_dividends'
 const LS_SNAP = 'wf_snapshots'
@@ -290,7 +313,15 @@ select.form-input{appearance:none;background-image:url("data:image/svg+xml,%3Csv
 .advice-card.warn{border-color:var(--yellow)}.advice-card.good{border-color:var(--green)}
 .advice-card.tip{border-color:var(--accent2)}.advice-card.info{border-color:var(--text3)}
 .ai-box{margin:0 16px 16px;background:var(--surface);border-radius:var(--radius-sm);
-  padding:16px 18px;font-size:.82rem;line-height:1.7;white-space:pre-wrap}
+  padding:16px 18px;font-size:.82rem;line-height:1.7}
+.ai-box h1{font-size:1rem;font-weight:600;color:var(--accent2);margin:16px 0 8px;padding-bottom:4px;border-bottom:1px solid var(--surface3)}
+.ai-box h2{font-size:.95rem;font-weight:600;color:var(--accent2);margin:14px 0 6px}
+.ai-box h3{font-size:.88rem;font-weight:600;color:var(--text);margin:12px 0 4px}
+.ai-box strong{color:var(--text);font-weight:600}
+.ai-box ul,.ai-box ol{padding-left:18px;margin:6px 0}
+.ai-box li{margin:3px 0}
+.ai-box hr{border:none;border-top:1px solid var(--surface3);margin:12px 0}
+.ai-box p{margin:6px 0}
 
 /* Settings */
 .setting-group{margin-bottom:20px}
@@ -578,7 +609,24 @@ export default function App() {
   const ruleAdvice = useMemo(() => getRuleAdvice(portfolio, t, debtToAsset, totalLiabTWD), [portfolio, t, debtToAsset, totalLiabTWD])
 
   // AI
+  // AI daily limit: 10 per user per day
+  const AI_DAILY_LIMIT = 10
+  const getAiUsageKey = () => `wf_ai_${user?.email || 'demo'}_${today()}`
+  const getAiUsageCount = () => {
+    try { const d = JSON.parse(localStorage.getItem(getAiUsageKey())); return d || 0 } catch { return 0 }
+  }
+  const incAiUsage = () => {
+    const count = getAiUsageCount() + 1
+    localStorage.setItem(getAiUsageKey(), JSON.stringify(count))
+    return count
+  }
+
   const getAiAdvice = async () => {
+    const used = getAiUsageCount()
+    if (used >= AI_DAILY_LIMIT) {
+      setAiResult(t.aiDailyLimit.replace('{n}', AI_DAILY_LIMIT))
+      return
+    }
     setAiLoading(true); setAiResult('')
     try {
       const summary = { total_value_twd: Math.round(portfolio.totalValueTWD), total_gain_pct: (portfolio.totalGainPct * 100).toFixed(1) + '%', usd_twd_rate: usdTwd,
@@ -589,6 +637,7 @@ export default function App() {
         holdings: portfolio.items.map(i => ({ name: i.name || i.ticker, market: i.market, type: i.asset_type, value_twd: Math.round(i.valueTWD), weight: (i.weight * 100).toFixed(1) + '%', gain_pct: (i.gainPct * 100).toFixed(1) + '%', currency: i.currency })) }
       const res = await fetch('/api/ai-advice', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portfolio: summary, lang }) })
       const data = await res.json(); setAiResult(data.advice || data.error || 'Error')
+      incAiUsage()
     } catch (e) { setAiResult(t.aiNotConfigured) }
     setAiLoading(false)
   }
@@ -794,9 +843,9 @@ export default function App() {
           <div className="section-header"><h2>{t.aiAdvisor}</h2></div>
           <div style={{ padding: '0 16px 12px' }}>
             <button className="btn-primary" onClick={getAiAdvice} disabled={aiLoading}>
-              {aiLoading ? t.analyzing : t.getAdvice}</button>
+              {aiLoading ? t.analyzing : `${t.getAdvice} (${AI_DAILY_LIMIT - getAiUsageCount()}/${AI_DAILY_LIMIT})`}</button>
           </div>
-          {aiResult && <div className="ai-box">{aiResult}</div>}
+          {aiResult && <div className="ai-box" dangerouslySetInnerHTML={{ __html: renderMarkdown(aiResult) }} />}
         </div>
       )}
 

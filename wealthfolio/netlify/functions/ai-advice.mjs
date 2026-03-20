@@ -47,7 +47,7 @@ ${JSON.stringify(portfolio, null, 2)}
           parts: [{ text: systemPrompt }]
         },
         generationConfig: {
-          maxOutputTokens: 2048,
+          maxOutputTokens: 16384,
           temperature: 0.7,
         }
       })
