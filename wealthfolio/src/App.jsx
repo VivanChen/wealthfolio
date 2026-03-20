@@ -911,7 +911,9 @@ function MiniPie({ title, data }) {
       <ResponsiveContainer width="100%" height={110}>
         <PieChart><Pie data={data} dataKey="value" cx="50%" cy="50%" innerRadius={26} outerRadius={44} paddingAngle={2} strokeWidth={0}>
           {data.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-        </Pie><Tooltip formatter={v => fmtMoney(v, 'NT$')} contentStyle={{ background: '#1a1a38', border: 'none', borderRadius: 10, fontSize: '.72rem', color: '#eaeaf4' }} /></PieChart>
+        </Pie><Tooltip formatter={v => fmtMoney(v, 'NT$')}
+          contentStyle={{ background: '#2a2a52', border: '1px solid rgba(255,255,255,.15)', borderRadius: 10, fontSize: '.78rem', color: '#fff', boxShadow: '0 4px 20px rgba(0,0,0,.5)' }}
+          itemStyle={{ color: '#fff' }} labelStyle={{ color: '#b0b0cc', fontWeight: 500 }} /></PieChart>
       </ResponsiveContainer>
       <div className="chart-legend">{data.map((d, i) => (
         <div key={i} className="legend-item"><div className="legend-dot" style={{ background: CHART_COLORS[i % CHART_COLORS.length] }} />{d.name}</div>
@@ -945,7 +947,8 @@ function TrendChart({ t, data, period, setPeriod }) {
           <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#5e5e80' }} tickLine={false} axisLine={false}
             interval={Math.max(0, Math.floor(data.length / 5) - 1)} />
           <YAxis hide />
-          <Tooltip contentStyle={{ background: '#1a1a38', border: 'none', borderRadius: 10, fontSize: '.72rem', color: '#eaeaf4' }}
+          <Tooltip contentStyle={{ background: '#2a2a52', border: '1px solid rgba(255,255,255,.15)', borderRadius: 10, fontSize: '.78rem', color: '#fff', boxShadow: '0 4px 20px rgba(0,0,0,.5)' }}
+            itemStyle={{ color: '#fff' }} labelStyle={{ color: '#b0b0cc', fontWeight: 500 }}
             formatter={v => [fmtMoney(v, 'NT$'), t.totalValue]} labelFormatter={(l, p) => p?.[0]?.payload?.fullDate || l} />
           <Line type="monotone" dataKey="value" stroke={isUp ? '#2dd4bf' : '#f472b6'} strokeWidth={2} dot={false} activeDot={{ r: 3.5 }} />
           <Line type="monotone" dataKey="cost" stroke="#5e5e80" strokeWidth={1} strokeDasharray="4 4" dot={false} />
