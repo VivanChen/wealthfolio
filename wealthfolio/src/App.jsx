@@ -341,8 +341,8 @@ select.form-input{appearance:none;background-image:url("data:image/svg+xml,%3Csv
 .div-item-date{color:var(--text3);font-size:.65rem;font-family:var(--mono)}
 .div-item-type{color:var(--text2);font-size:.62rem}
 .div-item-amount{font-family:var(--mono);font-weight:600;color:var(--yellow)}
-.div-item-del{color:var(--text3);font-size:.85rem;padding:6px;transition:color .2s}
-.div-item-del:active{color:var(--danger)}
+.div-item-del{color:var(--text3);font-size:1rem;padding:10px;margin:-10px;transition:color .2s;min-width:40px;min-height:40px;display:flex;align-items:center;justify-content:center}
+.div-item-del:active{color:var(--danger);background:rgba(239,68,68,.1);border-radius:8px}
 .div-total-row{display:flex;justify-content:space-between;padding:8px 14px;
   border-top:1px solid var(--surface3);margin-top:4px;font-size:.78rem;font-weight:500}
 .div-total-row .val{color:var(--yellow);font-family:var(--mono)}
@@ -502,8 +502,30 @@ export default function App() {
     setShowDivForm(false); setDivFormHolding(null)
   }
   const handleDeleteDividend = async (id) => {
-    if (isDemoMode) { const up = dividends.filter(d => d.id !== id); setDividends(up); saveLS(LS_DIV, up) }
-    else await supabase.from('dividends').delete().eq('id', id)
+    // Optimistic update — remove from UI immediately
+    setDividends(prev => prev.filter(d => d.id !== id))
+    if (isDemoMode) {
+      saveLS(LS_DIV, dividends.filter(d => d.id !== id))
+    } else {
+      await supabase.from('dividends').delete().eq('id', id)
+    }
+  }
+
+  // Batch generate dividends
+  const handleBatchDividends = async (divList) => {
+    if (isDemoMode) {
+      const newDivs = divList.map(d => ({ ...d, id: genId(), user_email: 'demo', created_at: new Date().toISOString() }))
+      const updated = [...newDivs, ...dividends]
+      setDividends(updated); saveLS(LS_DIV, updated)
+    } else {
+      const withEmail = divList.map(d => ({ ...d, user_email: user.email }))
+      await supabase.from('dividends').insert(withEmail)
+      // Refresh
+      const { data } = await supabase.from('dividends').select('*')
+        .eq('user_email', user.email).order('div_date', { ascending: false })
+      if (data) setDividends(data)
+    }
+    setShowDivForm(false); setDivFormHolding(null)
   }
 
   // Liability CRUD
@@ -847,7 +869,8 @@ export default function App() {
       <div className={`sheet ${showDivForm ? 'open' : ''}`}>
         <div className="sheet-handle" />
         {divFormHolding && <DividendForm t={t} holding={divFormHolding}
-          onSave={handleSaveDividend} onCancel={() => { setShowDivForm(false); setDivFormHolding(null) }} />}
+          onSave={handleSaveDividend} onBatchSave={handleBatchDividends}
+          onCancel={() => { setShowDivForm(false); setDivFormHolding(null) }} />}
       </div>
 
       {/* Liability Form */}
@@ -1201,29 +1224,78 @@ function HoldingDividends({ t, holding, dividends, onAddDividend, onDeleteDivide
   )
 }
 
-// ─── Dividend Form ───
-function DividendForm({ t, holding, onSave, onCancel }) {
+// ─── Dividend Form (with batch generation) ───
+function DividendForm({ t, holding, onSave, onBatchSave, onCancel }) {
+  const [formMode, setFormMode] = useState('single') // 'single' or 'batch'
   const [divDate, setDivDate] = useState(today())
   const [divType, setDivType] = useState('cash')
   const [perShare, setPerShare] = useState('')
   const [totalAmount, setTotalAmount] = useState('')
   const [autoCalc, setAutoCalc] = useState(true)
+  // Batch fields
+  const [frequency, setFrequency] = useState('monthly')
+  const [batchFrom, setBatchFrom] = useState(() => { const d = new Date(); d.setFullYear(d.getFullYear() - 1); return d.toISOString().slice(0, 10) })
+  const [batchTo, setBatchTo] = useState(today())
+  const [batchPerShare, setBatchPerShare] = useState('')
+  const [batchTotal, setBatchTotal] = useState('')
+  const [batchAutoCalc, setBatchAutoCalc] = useState(true)
+
   const sym = CURRENCIES[holding.currency]?.symbol || '$'
 
   useEffect(() => {
     if (autoCalc && perShare && holding.shares) setTotalAmount((Number(perShare) * Number(holding.shares)).toFixed(2))
   }, [perShare, autoCalc])
 
-  const handleSubmit = () => {
+  useEffect(() => {
+    if (batchAutoCalc && batchPerShare && holding.shares) setBatchTotal((Number(batchPerShare) * Number(holding.shares)).toFixed(2))
+  }, [batchPerShare, batchAutoCalc])
+
+  // Generate batch dates
+  const batchDates = useMemo(() => {
+    if (formMode !== 'batch' || !batchFrom || !batchTo) return []
+    const dates = []
+    const start = new Date(batchFrom), end = new Date(batchTo)
+    const monthStep = frequency === 'monthly' ? 1 : frequency === 'quarterly' ? 3 : frequency === 'semi_annual' ? 6 : 12
+    let cursor = new Date(start)
+    while (cursor <= end) {
+      dates.push(cursor.toISOString().slice(0, 10))
+      cursor = new Date(cursor)
+      cursor.setMonth(cursor.getMonth() + monthStep)
+    }
+    return dates
+  }, [formMode, frequency, batchFrom, batchTo])
+
+  const batchAmountPerEntry = Number(batchTotal) || (Number(batchPerShare) * Number(holding.shares)) || 0
+
+  const handleSingleSubmit = () => {
     const total = Number(totalAmount); if (!total || total <= 0) return
     onSave({ holding_id: holding.id, div_date: divDate, div_type: divType,
       per_share: Number(perShare) || 0, total_amount: total, currency: holding.currency })
+  }
+
+  const handleBatchSubmit = () => {
+    if (!batchDates.length || batchAmountPerEntry <= 0) return
+    const divList = batchDates.map(date => ({
+      holding_id: holding.id, div_date: date, div_type: divType,
+      per_share: Number(batchPerShare) || 0, total_amount: batchAmountPerEntry, currency: holding.currency
+    }))
+    onBatchSave(divList)
   }
 
   return (
     <div>
       <div className="sheet-title">🎁 {t.addDividend}</div>
       <div style={{ textAlign: 'center', fontSize: '.82rem', color: 'var(--text2)', marginBottom: 14 }}>{holding.name || holding.ticker}</div>
+
+      {/* Mode toggle */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <button className={`type-chip ${formMode === 'single' ? 'active' : ''}`} style={{ flex: 1, textAlign: 'center' }}
+          onClick={() => setFormMode('single')}>{t.divSingle}</button>
+        <button className={`type-chip ${formMode === 'batch' ? 'active' : ''}`} style={{ flex: 1, textAlign: 'center' }}
+          onClick={() => setFormMode('batch')}>{t.divBatch}</button>
+      </div>
+
+      {/* Div type */}
       <div className="form-group">
         <div className="type-chips">
           {['cash', 'stock', 'interest'].map(tp => (
@@ -1231,25 +1303,96 @@ function DividendForm({ t, holding, onSave, onCancel }) {
           ))}
         </div>
       </div>
-      <div className="form-group">
-        <label className="form-label">{t.divDate}</label>
-        <input className="form-input" type="date" value={divDate} onChange={e => setDivDate(e.target.value)} />
-      </div>
-      {holding.shares > 0 && (
-        <div className="form-group">
-          <label className="form-label">{t.divPerShare} ({sym})</label>
-          <input className="form-input" type="number" inputMode="decimal" placeholder="0.82" value={perShare}
-            onChange={e => { setPerShare(e.target.value); setAutoCalc(true) }} style={{ fontFamily: 'var(--mono)' }} />
-          <div className="form-hint">× {holding.shares} {t.shares} = {perShare ? fmtMoney(Number(perShare) * holding.shares, sym) : '-'}</div>
-        </div>
+
+      {formMode === 'single' ? (
+        <>
+          <div className="form-group">
+            <label className="form-label">{t.divDate}</label>
+            <input className="form-input" type="date" value={divDate} onChange={e => setDivDate(e.target.value)} />
+          </div>
+          {holding.shares > 0 && (
+            <div className="form-group">
+              <label className="form-label">{t.divPerShare} ({sym})</label>
+              <input className="form-input" type="number" inputMode="decimal" placeholder="0.82" value={perShare}
+                onChange={e => { setPerShare(e.target.value); setAutoCalc(true) }} style={{ fontFamily: 'var(--mono)' }} />
+              <div className="form-hint">× {Number(holding.shares).toLocaleString()} = {perShare ? fmtMoney(Number(perShare) * holding.shares, sym) : '-'}</div>
+            </div>
+          )}
+          <div className="form-group">
+            <label className="form-label">{t.divTotal} ({sym})</label>
+            <input className="form-input" type="number" inputMode="decimal" value={totalAmount}
+              onChange={e => { setTotalAmount(e.target.value); setAutoCalc(false) }}
+              style={{ fontFamily: 'var(--mono)', fontSize: '1.1rem', fontWeight: 600, textAlign: 'center' }} />
+          </div>
+          <button className="btn-primary" onClick={handleSingleSubmit}>{t.save}</button>
+        </>
+      ) : (
+        <>
+          {/* Frequency */}
+          <div className="form-group">
+            <label className="form-label">{t.divFrequency}</label>
+            <div className="type-chips">
+              {['monthly', 'quarterly', 'semi_annual', 'annual'].map(f => (
+                <button key={f} className={`type-chip ${frequency === f ? 'active' : ''}`}
+                  onClick={() => setFrequency(f)}>{t.frequencies[f]}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Date range */}
+          <div className="form-row">
+            <div className="form-group">
+              <label className="form-label">{t.divBatchFrom}</label>
+              <input className="form-input" type="date" value={batchFrom} onChange={e => setBatchFrom(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="form-label">{t.divBatchTo}</label>
+              <input className="form-input" type="date" value={batchTo} onChange={e => setBatchTo(e.target.value)} />
+            </div>
+          </div>
+
+          {/* Amount per entry */}
+          {holding.shares > 0 && (
+            <div className="form-group">
+              <label className="form-label">{t.divPerShare} ({sym})</label>
+              <input className="form-input" type="number" inputMode="decimal" placeholder="0.048" value={batchPerShare}
+                onChange={e => { setBatchPerShare(e.target.value); setBatchAutoCalc(true) }} style={{ fontFamily: 'var(--mono)' }} />
+              <div className="form-hint">× {Number(holding.shares).toLocaleString()} = {batchPerShare ? fmtMoney(Number(batchPerShare) * holding.shares, sym) : '-'}</div>
+            </div>
+          )}
+          <div className="form-group">
+            <label className="form-label">{t.divAmountPerEntry} ({sym})</label>
+            <input className="form-input" type="number" inputMode="decimal" value={batchTotal}
+              onChange={e => { setBatchTotal(e.target.value); setBatchAutoCalc(false) }}
+              style={{ fontFamily: 'var(--mono)', fontWeight: 600, textAlign: 'center' }} />
+          </div>
+
+          {/* Preview */}
+          {batchDates.length > 0 && batchAmountPerEntry > 0 && (
+            <div style={{ background: 'var(--surface2)', borderRadius: 'var(--radius-sm)', padding: '12px 14px', marginBottom: 14, fontSize: '.78rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text2)', marginBottom: 6 }}>
+                <span>{t.divBatchPreview}</span>
+                <span style={{ color: 'var(--yellow)', fontFamily: 'var(--mono)', fontWeight: 600 }}>
+                  {batchDates.length} {t.divBatchEntries} · {fmtMoney(batchAmountPerEntry * batchDates.length, sym)}
+                </span>
+              </div>
+              <div style={{ maxHeight: 120, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 3 }}>
+                {batchDates.map((d, i) => (
+                  <div key={i} style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text3)', fontSize: '.7rem', fontFamily: 'var(--mono)' }}>
+                    <span>{d}</span>
+                    <span style={{ color: 'var(--yellow)' }}>{fmtMoney(batchAmountPerEntry, sym)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <button className="btn-primary" onClick={handleBatchSubmit} disabled={!batchDates.length || batchAmountPerEntry <= 0}>
+            {t.divBatchGenerate} ({batchDates.length} {t.divBatchEntries})
+          </button>
+        </>
       )}
-      <div className="form-group">
-        <label className="form-label">{t.divTotal} ({sym})</label>
-        <input className="form-input" type="number" inputMode="decimal" value={totalAmount}
-          onChange={e => { setTotalAmount(e.target.value); setAutoCalc(false) }}
-          style={{ fontFamily: 'var(--mono)', fontSize: '1.1rem', fontWeight: 600, textAlign: 'center' }} />
-      </div>
-      <button className="btn-primary" onClick={handleSubmit}>{t.save}</button>
+
       <button className="btn-outline" onClick={onCancel}>{t.cancel}</button>
     </div>
   )
