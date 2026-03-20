@@ -145,4 +145,4 @@ export const CURRENCIES = {
   TWD: { symbol: 'NT$', name: 'TWD' },
 }
 
-export const CHART_COLORS = ['#6c5ce7','#00cec9','#fd79a8','#fdcb6e','#e17055','#74b9ff','#a29bfe','#55efc4','#fab1a0','#81ecec']
+export const CHART_COLORS = ['#818cf8','#34d399','#fb7185','#fcd34d','#f97316','#60a5fa','#c084fc','#2dd4bf','#f472b6','#a78bfa']

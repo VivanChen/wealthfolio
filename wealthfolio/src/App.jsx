@@ -8,6 +8,7 @@ import * as XLSX from 'xlsx'
 const genId = () => crypto.randomUUID?.() || Date.now().toString(36) + Math.random().toString(36).slice(2)
 const today = () => new Date().toISOString().slice(0, 10)
 const fmtMoney = (n, sym = '$') => `${n < 0 ? '-' : ''}${sym}${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+const safeSheet = (name) => name.replace(/[:\\/?*[\]]/g, '_').slice(0, 31)
 const LS_KEY = 'wf_holdings'
 const LS_DIV = 'wf_dividends'
 const LS_SNAP = 'wf_snapshots'
@@ -170,17 +171,17 @@ button{cursor:pointer;border:none;background:none;color:inherit}
 
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;padding:8px 16px 0}
 .stat{background:var(--surface);border-radius:var(--radius-sm);padding:12px}
-.stat .label{font-size:.62rem;color:var(--text3);font-weight:500;letter-spacing:.03em}
-.stat .val{font-family:var(--mono);font-size:.88rem;font-weight:600;margin-top:3px}
-.stat .val.up{color:var(--green)}.stat .val.down{color:var(--red)}
-.stat .val.gold{color:var(--yellow)}
+.stat .label{font-size:.65rem;color:var(--text2);font-weight:500;letter-spacing:.03em}
+.stat .val{font-family:var(--mono);font-size:.88rem;font-weight:600;margin-top:3px;color:var(--text)}
+.stat .val.up{color:#34d399}.stat .val.down{color:#fb7185}
+.stat .val.gold{color:#fcd34d}
 
 /* Charts */
 .charts{display:flex;gap:8px;padding:8px 16px}
 .chart-box{flex:1;background:var(--surface);border-radius:var(--radius-sm);padding:10px 6px 4px}
-.chart-title{font-size:.65rem;color:var(--text3);text-align:center;font-weight:500;letter-spacing:.03em}
+.chart-title{font-size:.68rem;color:var(--text2);text-align:center;font-weight:500;letter-spacing:.03em}
 .chart-legend{display:flex;flex-wrap:wrap;gap:3px 8px;padding:4px 6px 2px;justify-content:center}
-.legend-item{display:flex;align-items:center;gap:3px;font-size:.58rem;color:var(--text2)}
+.legend-item{display:flex;align-items:center;gap:3px;font-size:.62rem;color:var(--text)}
 .legend-dot{width:6px;height:6px;border-radius:2px;flex-shrink:0}
 
 /* Trend */
@@ -612,7 +613,7 @@ export default function App() {
     ]
     const wsSummary = XLSX.utils.aoa_to_sheet(summaryData)
     wsSummary['!cols'] = [{ wch: 18 }, { wch: 18 }]
-    XLSX.utils.book_append_sheet(wb, wsSummary, t.dashboard)
+    XLSX.utils.book_append_sheet(wb, wsSummary, safeSheet(t.dashboard))
 
     // Sheet 2: Holdings
     const rows = portfolio.items.map(i => ({
@@ -625,7 +626,7 @@ export default function App() {
       [t.totalDividends]: i.totalDiv > 0 ? Math.round(i.totalDiv) : '-',
       [t.weight]: (i.weight * 100).toFixed(1) + '%',
     }))
-    if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), t.holdings)
+    if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), safeSheet(t.holdings))
 
     // Sheet 3: Dividends
     if (dividends.length) {
@@ -633,7 +634,7 @@ export default function App() {
         return { [t.divDate]: d.div_date, [t.ticker]: h?.ticker || '-', [t.name]: h?.name || '-',
           [t.divType]: t.divTypes[d.div_type] || d.div_type, [t.divPerShare]: d.per_share || '-',
           [t.divTotal]: d.total_amount, [t.currency]: d.currency || 'TWD' } })
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(dr), t.dividends)
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(dr), safeSheet(t.dividends))
     }
 
     // Sheet 4: Liabilities
@@ -646,7 +647,7 @@ export default function App() {
         [t.startDate]: l.start_date || '-', [t.endDate]: l.end_date || '-',
         [t.note]: l.note || '',
       }))
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lr), t.liabilities)
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lr), safeSheet(t.liabilities))
     }
 
     XLSX.writeFile(wb, `wealthfolio_${today()}.xlsx`)
