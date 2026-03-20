@@ -1,0 +1,9 @@
+{
+  "name": "WealthFolio 理財規劃",
+  "short_name": "WealthFolio",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a1a",
+  "theme_color": "#0a0a1a",
+  "icons": []
+}
