@@ -30,7 +30,7 @@ export const T = {
     market: '市場',
     markets: { us: '美股', tw: '台股', cash: '現金/固收' },
     assetType: '資產類型',
-    assetTypes: { stock: '個股', etf: 'ETF', cash: '現金', deposit: '定存', bond: '債券' },
+    assetTypes: { stock: '個股', etf: 'ETF', fund: '基金', cash: '現金', deposit: '定存', bond: '債券' },
     currency: '幣別',
     price: '現價',
     cost: '成本',
@@ -73,6 +73,9 @@ export const T = {
       goodDiversify: '✅ 持倉分散度良好',
       singleMarket: '💡 目前僅投資{market}，可考慮加入其他市場分散地域風險',
       noData: '請先新增資產以獲取配置建議',
+      highDebt: '⚠️ 負債比偏高（{pct}%），建議優先償還高利率負債',
+      moderateDebt: '💡 負債比 {pct}%，在可控範圍，留意月付金壓力',
+      healthyDebt: '✅ 負債比 {pct}%，財務狀況健康',
     },
     demoMode: '展示模式（資料僅存於本機）',
     dividends: '股利/配息',
@@ -92,6 +95,30 @@ export const T = {
     period: { '7d': '7天', '30d': '30天', '90d': '90天', all: '全部' },
     optional: '可選',
     autoDetect: '自動偵測市場',
+    // Liabilities
+    liabilities: '負債',
+    addLiability: '新增負債',
+    editLiability: '編輯負債',
+    totalLiabilities: '總負債',
+    netWorth: '淨資產',
+    liabilityType: '負債類型',
+    liabilityTypes: {
+      mortgage: '房貸', personal_loan: '信貸', car_loan: '車貸',
+      credit_card: '信用卡', student_loan: '學貸', other: '其他'
+    },
+    totalAmount: '貸款總額',
+    remainingAmount: '剩餘本金',
+    monthlyPayment: '月付金額',
+    startDate: '起始日',
+    endDate: '到期日',
+    noLiabilities: '尚無負債記錄',
+    confirmDeleteLiab: '確認刪除此筆負債？',
+    // Cash flow
+    cashFlow: '每月現金流',
+    monthlyDividend: '月均配息收入',
+    monthlyLoanPayment: '月付貸款支出',
+    netCashFlow: '淨現金流',
+    debtToAsset: '負債比',
   }
 }
 

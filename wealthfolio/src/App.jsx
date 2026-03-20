@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react'
+import React, { useState, useEffect, useMemo } from 'react'
 import { supabase, isDemoMode } from './supabase.js'
 import { T, CHART_COLORS, CURRENCIES } from './i18n.js'
 import { PieChart, Pie, Cell, LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip } from 'recharts'
@@ -11,6 +11,7 @@ const fmtMoney = (n, sym = '$') => `${n < 0 ? '-' : ''}${sym}${Math.abs(n).toLoc
 const LS_KEY = 'wf_holdings'
 const LS_DIV = 'wf_dividends'
 const LS_SNAP = 'wf_snapshots'
+const LS_LIAB = 'wf_liabilities'
 const LS_PRICES = 'wf_prices'
 const loadLS = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d } catch { return d } }
 const saveLS = (k, v) => localStorage.setItem(k, JSON.stringify(v))
@@ -68,7 +69,7 @@ function calcPortfolio(holdings, prices, usdTwd = 32, dividends = []) {
 }
 
 // ─── Rule-Based Advice ───
-function getRuleAdvice(portfolio, t) {
+function getRuleAdvice(portfolio, t, debtToAsset = 0, totalLiabTWD = 0) {
   const { items, totalValueTWD } = portfolio
   if (!items.length) return [{ text: t.advice.noData, type: 'info' }]
   const tips = []
@@ -86,6 +87,13 @@ function getRuleAdvice(portfolio, t) {
   else if (items.length > 3) tips.push({ text: t.advice.goodDiversify, type: 'good' })
   const mkts = new Set(items.map(i => i.market))
   if (mkts.size === 1 && items.length > 1) tips.push({ text: t.advice.singleMarket.replace('{market}', t.markets[items[0].market] || ''), type: 'tip' })
+  // Debt ratio advice
+  if (totalLiabTWD > 0) {
+    const dta = debtToAsset * 100
+    if (dta > 60) tips.push({ text: t.advice.highDebt.replace('{pct}', dta.toFixed(0)), type: 'warn' })
+    else if (dta > 40) tips.push({ text: t.advice.moderateDebt.replace('{pct}', dta.toFixed(0)), type: 'tip' })
+    else tips.push({ text: t.advice.healthyDebt.replace('{pct}', dta.toFixed(0)), type: 'good' })
+  }
   return tips
 }
 
@@ -349,12 +357,15 @@ export default function App() {
   const [tab, setTab] = useState('dashboard')
   const [holdings, setHoldings] = useState([])
   const [dividends, setDividends] = useState([])
+  const [liabilities, setLiabilities] = useState([])
   const [snapshots, setSnapshots] = useState([])
   const [trendPeriod, setTrendPeriod] = useState('30d')
   const [prices, setPrices] = useState(() => loadLS(LS_PRICES, {}))
   const [refreshing, setRefreshing] = useState(false)
   const [showForm, setShowForm] = useState(false)
   const [editingItem, setEditingItem] = useState(null)
+  const [showLiabForm, setShowLiabForm] = useState(false)
+  const [editingLiab, setEditingLiab] = useState(null)
   const [showDivForm, setShowDivForm] = useState(false)
   const [divFormHolding, setDivFormHolding] = useState(null)
   const [showHoldingDetail, setShowHoldingDetail] = useState(null)
@@ -368,7 +379,7 @@ export default function App() {
   useEffect(() => {
     if (isDemoMode) {
       setAuthChecked(true); setUser({ email: 'demo' })
-      setHoldings(loadLS(LS_KEY, [])); setDividends(loadLS(LS_DIV, [])); setSnapshots(loadLS(LS_SNAP, []))
+      setHoldings(loadLS(LS_KEY, [])); setDividends(loadLS(LS_DIV, [])); setSnapshots(loadLS(LS_SNAP, [])); setLiabilities(loadLS(LS_LIAB, []))
       return
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -397,11 +408,17 @@ export default function App() {
         .eq('user_email', email).order('snap_date', { ascending: true })
       if (data) setSnapshots(data)
     }
-    f1(); f2(); f3()
+    const f4 = async () => {
+      const { data } = await supabase.from('liabilities').select('*')
+        .eq('user_email', email).order('created_at', { ascending: false })
+      if (data) setLiabilities(data)
+    }
+    f1(); f2(); f3(); f4()
     // Realtime — only listen to this user's changes
     const ch = supabase.channel(`user_${email}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'holdings', filter: `user_email=eq.${email}` }, () => f1())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'dividends', filter: `user_email=eq.${email}` }, () => f2())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'liabilities', filter: `user_email=eq.${email}` }, () => f4())
       .subscribe()
     return () => supabase.removeChannel(ch)
   }, [user])
@@ -419,7 +436,6 @@ export default function App() {
 
   const usdTwd = prices['USDTWD=X']?.price || 32
   const portfolio = useMemo(() => calcPortfolio(holdings, prices, usdTwd, dividends), [holdings, prices, usdTwd, dividends])
-  const ruleAdvice = useMemo(() => getRuleAdvice(portfolio, t), [portfolio, t])
 
   const marketAlloc = useMemo(() => {
     const m = {}; portfolio.items.forEach(i => { const k = t.markets[i.market] || i.market; m[k] = (m[k] || 0) + i.valueTWD })
@@ -469,7 +485,13 @@ export default function App() {
     setShowForm(false); setEditingItem(null)
   }
   const handleDelete = async (id) => {
-    if (isDemoMode) { const up = holdings.filter(h => h.id !== id); setHoldings(up); saveLS(LS_KEY, up) }
+    if (isDemoMode) {
+      const up = holdings.filter(h => h.id !== id)
+      setHoldings(up); saveLS(LS_KEY, up)
+      // Clean up orphaned dividends
+      const upDiv = dividends.filter(d => d.holding_id !== id)
+      setDividends(upDiv); saveLS(LS_DIV, upDiv)
+    }
     else await supabase.from('holdings').delete().eq('id', id)
     setConfirmDelete(null); setShowForm(false); setEditingItem(null)
   }
@@ -483,11 +505,63 @@ export default function App() {
     else await supabase.from('dividends').delete().eq('id', id)
   }
 
+  // Liability CRUD
+  const handleSaveLiability = async (item) => {
+    if (isDemoMode) {
+      let up; if (item.id && liabilities.find(l => l.id === item.id)) up = liabilities.map(l => l.id === item.id ? { ...l, ...item } : l)
+      else up = [{ ...item, id: genId(), user_email: 'demo', created_at: new Date().toISOString() }, ...liabilities]
+      setLiabilities(up); saveLS(LS_LIAB, up)
+    } else {
+      if (item.id) await supabase.from('liabilities').update(item).eq('id', item.id)
+      else await supabase.from('liabilities').insert({ ...item, user_email: user.email })
+    }
+    setShowLiabForm(false); setEditingLiab(null)
+  }
+  const handleDeleteLiability = async (id) => {
+    if (isDemoMode) { const up = liabilities.filter(l => l.id !== id); setLiabilities(up); saveLS(LS_LIAB, up) }
+    else await supabase.from('liabilities').delete().eq('id', id)
+    setShowLiabForm(false); setEditingLiab(null)
+  }
+
+  // Net worth & cash flow
+  const totalLiabTWD = useMemo(() => {
+    return liabilities.reduce((s, l) => {
+      const rate = l.currency === 'USD' ? usdTwd : 1
+      return s + (Number(l.remaining_amount) || 0) * rate
+    }, 0)
+  }, [liabilities, usdTwd])
+
+  const netWorth = portfolio.totalValueTWD - totalLiabTWD
+
+  const monthlyPayments = useMemo(() => {
+    return liabilities.reduce((s, l) => {
+      const rate = l.currency === 'USD' ? usdTwd : 1
+      return s + (Number(l.monthly_payment) || 0) * rate
+    }, 0)
+  }, [liabilities, usdTwd])
+
+  const monthlyDivIncome = useMemo(() => {
+    if (!dividends.length || !portfolio.items.length) return 0
+    // Estimate monthly from total dividends / months of data
+    const dates = dividends.map(d => new Date(d.div_date)).sort((a, b) => a - b)
+    if (dates.length < 1) return 0
+    const months = Math.max(1, (Date.now() - dates[0].getTime()) / (30 * 86400000))
+    return portfolio.totalDivTWD / months
+  }, [dividends, portfolio])
+
+  const debtToAsset = portfolio.totalValueTWD > 0 ? totalLiabTWD / portfolio.totalValueTWD : 0
+
+  const ruleAdvice = useMemo(() => getRuleAdvice(portfolio, t, debtToAsset, totalLiabTWD), [portfolio, t, debtToAsset, totalLiabTWD])
+
   // AI
   const getAiAdvice = async () => {
     setAiLoading(true); setAiResult('')
     try {
       const summary = { total_value_twd: Math.round(portfolio.totalValueTWD), total_gain_pct: (portfolio.totalGainPct * 100).toFixed(1) + '%', usd_twd_rate: usdTwd,
+        total_liabilities_twd: Math.round(totalLiabTWD), net_worth_twd: Math.round(netWorth),
+        debt_to_asset_ratio: (debtToAsset * 100).toFixed(1) + '%',
+        monthly_loan_payments_twd: Math.round(monthlyPayments),
+        liabilities: liabilities.map(l => ({ name: l.name, type: l.liability_type, remaining: l.remaining_amount, rate: l.interest_rate + '%', monthly: l.monthly_payment })),
         holdings: portfolio.items.map(i => ({ name: i.name || i.ticker, market: i.market, type: i.asset_type, value_twd: Math.round(i.valueTWD), weight: (i.weight * 100).toFixed(1) + '%', gain_pct: (i.gainPct * 100).toFixed(1) + '%', currency: i.currency })) }
       const res = await fetch('/api/ai-advice', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portfolio: summary, lang }) })
       const data = await res.json(); setAiResult(data.advice || data.error || 'Error')
@@ -497,22 +571,61 @@ export default function App() {
 
   // Export
   const exportExcel = () => {
+    const wb = XLSX.utils.book_new()
+
+    // Sheet 1: Summary
+    const summaryData = [
+      [t.netWorth, Math.round(netWorth)],
+      [t.totalValue, Math.round(portfolio.totalValueTWD)],
+      [t.totalCost, Math.round(portfolio.totalCostTWD)],
+      [t.totalGain, Math.round(portfolio.totalGainTWD)],
+      [t.gainPct, (portfolio.totalGainPct * 100).toFixed(1) + '%'],
+      [t.totalDividends, Math.round(portfolio.totalDivTWD)],
+      [t.totalLiabilities, Math.round(totalLiabTWD)],
+      [t.monthlyLoanPayment, Math.round(monthlyPayments)],
+      [t.debtToAsset, (debtToAsset * 100).toFixed(1) + '%'],
+      ['USD/TWD', usdTwd.toFixed(2)],
+      [t.lastUpdate, today()],
+    ]
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryData)
+    wsSummary['!cols'] = [{ wch: 18 }, { wch: 18 }]
+    XLSX.utils.book_append_sheet(wb, wsSummary, t.dashboard)
+
+    // Sheet 2: Holdings
     const rows = portfolio.items.map(i => ({
       [t.market]: t.markets[i.market], [t.assetType]: t.assetTypes[i.asset_type],
       [t.ticker]: i.ticker || '-', [t.name]: i.name || '-', [t.shares]: i.shares || '-',
       [t.avgCost]: i.avg_cost || '-', [t.price]: i.currentPrice || '-',
-      [`${t.gain}`]: i.market !== 'cash' ? Math.round(i.gain) : '-',
+      [t.currency]: i.currency,
+      [t.gain]: i.market !== 'cash' ? Math.round(i.gain) : '-',
       [t.gainPct]: i.market !== 'cash' ? (i.gainPct * 100).toFixed(1) + '%' : '-',
       [t.totalDividends]: i.totalDiv > 0 ? Math.round(i.totalDiv) : '-',
       [t.weight]: (i.weight * 100).toFixed(1) + '%',
     }))
-    const ws = XLSX.utils.json_to_sheet(rows); const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws, 'Portfolio')
+    if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), t.holdings)
+
+    // Sheet 3: Dividends
     if (dividends.length) {
       const dr = dividends.map(d => { const h = holdings.find(x => x.id === d.holding_id)
-        return { [t.divDate]: d.div_date, [t.ticker]: h?.ticker || '-', [t.name]: h?.name || '-', [t.divType]: t.divTypes[d.div_type] || d.div_type, [t.divTotal]: d.total_amount, [t.currency]: d.currency || 'TWD' } })
+        return { [t.divDate]: d.div_date, [t.ticker]: h?.ticker || '-', [t.name]: h?.name || '-',
+          [t.divType]: t.divTypes[d.div_type] || d.div_type, [t.divPerShare]: d.per_share || '-',
+          [t.divTotal]: d.total_amount, [t.currency]: d.currency || 'TWD' } })
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(dr), t.dividends)
     }
+
+    // Sheet 4: Liabilities
+    if (liabilities.length) {
+      const lr = liabilities.map(l => ({
+        [t.liabilityType]: t.liabilityTypes[l.liability_type] || l.liability_type,
+        [t.name]: l.name, [t.totalAmount]: l.total_amount,
+        [t.remainingAmount]: l.remaining_amount, [t.interestRate]: l.interest_rate + '%',
+        [t.monthlyPayment]: l.monthly_payment, [t.currency]: l.currency,
+        [t.startDate]: l.start_date || '-', [t.endDate]: l.end_date || '-',
+        [t.note]: l.note || '',
+      }))
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lr), t.liabilities)
+    }
+
     XLSX.writeFile(wb, `wealthfolio_${today()}.xlsx`)
   }
 
@@ -540,8 +653,8 @@ export default function App() {
         <div className="fade-up">
           <div className="summary">
             <div className="hero-card">
-              <div className="hero-label">{t.totalValue}</div>
-              <div className="hero-amount">{fmtMoney(portfolio.totalValueTWD, 'NT$')}</div>
+              <div className="hero-label">{t.netWorth}</div>
+              <div className="hero-amount">{fmtMoney(netWorth, 'NT$')}</div>
               <span className={`hero-change ${portfolio.totalGainTWD >= 0 ? 'up' : 'down'}`}>
                 {portfolio.totalGainTWD >= 0 ? '▲' : '▼'} {fmtMoney(portfolio.totalGainTWD, 'NT$')}
                 &nbsp;({portfolio.totalGainPct >= 0 ? '+' : ''}{(portfolio.totalGainPct * 100).toFixed(1)}%)
@@ -549,14 +662,23 @@ export default function App() {
             </div>
           </div>
           <div className="stats">
-            <div className="stat"><div className="label">{t.totalCost}</div><div className="val">{fmtMoney(portfolio.totalCostTWD, 'NT$')}</div></div>
+            <div className="stat"><div className="label">{t.totalValue}</div><div className="val">{fmtMoney(portfolio.totalValueTWD, 'NT$')}</div></div>
+            <div className="stat"><div className="label">{t.totalLiabilities}</div>
+              <div className="val down">{totalLiabTWD > 0 ? '-' : ''}{fmtMoney(totalLiabTWD, 'NT$')}</div></div>
             <div className="stat"><div className="label">{t.totalGain}</div>
               <div className={`val ${portfolio.totalGainTWD >= 0 ? 'up' : 'down'}`}>{portfolio.totalGainTWD >= 0 ? '+' : ''}{fmtMoney(portfolio.totalGainTWD, 'NT$')}</div></div>
-            <div className="stat"><div className="label">🎁 {t.totalDividends}</div>
-              <div className="val gold">{fmtMoney(portfolio.totalDivTWD, 'NT$')}</div></div>
+          </div>
+          {/* Cash flow row */}
+          <div className="stats s1 fade-up">
+            <div className="stat"><div className="label">🎁 {t.monthlyDividend}</div>
+              <div className="val gold">{fmtMoney(monthlyDivIncome, 'NT$')}</div></div>
+            <div className="stat"><div className="label">💳 {t.monthlyLoanPayment}</div>
+              <div className="val down">{monthlyPayments > 0 ? '-' : ''}{fmtMoney(monthlyPayments, 'NT$')}</div></div>
+            <div className="stat"><div className="label">{t.debtToAsset}</div>
+              <div className={`val ${debtToAsset > 0.5 ? 'down' : debtToAsset > 0.3 ? 'gold' : 'up'}`}>{(debtToAsset * 100).toFixed(1)}%</div></div>
           </div>
           {portfolio.items.length > 0 && (
-            <div className="charts s1 fade-up">
+            <div className="charts s2 fade-up">
               <MiniPie title={t.byMarket} data={marketAlloc} />
               <MiniPie title={t.byType} data={typeAlloc} />
             </div>
@@ -600,10 +722,45 @@ export default function App() {
               </div>
             ))}
           </div>
+
+          {/* Liabilities Section */}
+          <div className="section-header" style={{ marginTop: 8 }}>
+            <h2>💳 {t.liabilities}</h2>
+            <button className="div-add-btn" onClick={() => { setEditingLiab(null); setShowLiabForm(true) }}>+ {t.addLiability}</button>
+          </div>
+          <div className="holdings">
+            {liabilities.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text3)', fontSize: '.82rem' }}>{t.noLiabilities}</div>
+            ) : liabilities.map(l => {
+              const sym = CURRENCIES[l.currency]?.symbol || 'NT$'
+              const progress = l.total_amount > 0 ? (1 - (l.remaining_amount / l.total_amount)) * 100 : 0
+              return (
+                <div className="h-card" key={l.id} onClick={() => { setEditingLiab(l); setShowLiabForm(true) }}>
+                  <div className="h-icon" style={{ background: 'var(--red-bg)' }}>
+                    {l.liability_type === 'mortgage' ? '🏠' : l.liability_type === 'car_loan' ? '🚗' : l.liability_type === 'credit_card' ? '💳' : l.liability_type === 'student_loan' ? '🎓' : '📄'}
+                  </div>
+                  <div className="h-body">
+                    <div className="h-name">{l.name || t.liabilityTypes[l.liability_type]}</div>
+                    <div className="h-meta">
+                      <span className="h-ticker">{l.interest_rate}%</span>
+                      {l.monthly_payment > 0 && <span className="h-div-badge" style={{ color: 'var(--red)', background: 'var(--red-bg)' }}>月付 {sym}{Number(l.monthly_payment).toLocaleString()}</span>}
+                    </div>
+                    {l.total_amount > 0 && (
+                      <div style={{ marginTop: 4, height: 3, background: 'var(--surface3)', borderRadius: 2, overflow: 'hidden' }}>
+                        <div style={{ height: '100%', width: progress + '%', background: 'var(--green)', borderRadius: 2, transition: 'width .3s' }} />
+                      </div>
+                    )}
+                  </div>
+                  <div className="h-right">
+                    <div className="h-value" style={{ color: 'var(--red)' }}>-{fmtMoney(l.remaining_amount, sym)}</div>
+                    {l.total_amount > 0 && <div className="h-pct">{progress.toFixed(0)}% 已還</div>}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         </div>
       )}
-
-      {/* ─── Advisor Tab ─── */}
       {tab === 'advisor' && (
         <div className="fade-up">
           <div className="section-header"><h2>{t.ruleBasedTitle}</h2></div>
@@ -670,10 +827,10 @@ export default function App() {
       <div className={`overlay ${showForm ? 'open' : ''}`} onClick={() => { setShowForm(false); setEditingItem(null) }} />
       <div className={`sheet ${showForm ? 'open' : ''}`}>
         <div className="sheet-handle" />
-        <SmartForm t={t} item={editingItem} onSave={handleSave} onDelete={id => setConfirmDelete(id)}
+        {showForm && <SmartForm key={editingItem?.id || 'new'} t={t} item={editingItem} onSave={handleSave} onDelete={id => setConfirmDelete({ type: 'holding', id })}
           onCancel={() => { setShowForm(false); setEditingItem(null) }}
           onShowDividends={(item) => { setShowForm(false); setEditingItem(null); setShowHoldingDetail(item) }}
-          dividendCount={editingItem ? dividends.filter(d => d.holding_id === editingItem.id).length : 0} />
+          dividendCount={editingItem ? dividends.filter(d => d.holding_id === editingItem.id).length : 0} />}
       </div>
 
       <div className={`overlay ${showHoldingDetail ? 'open' : ''}`} onClick={() => setShowHoldingDetail(null)} />
@@ -692,13 +849,25 @@ export default function App() {
           onSave={handleSaveDividend} onCancel={() => { setShowDivForm(false); setDivFormHolding(null) }} />}
       </div>
 
+      {/* Liability Form */}
+      <div className={`overlay ${showLiabForm ? 'open' : ''}`} onClick={() => { setShowLiabForm(false); setEditingLiab(null) }} />
+      <div className={`sheet ${showLiabForm ? 'open' : ''}`}>
+        <div className="sheet-handle" />
+        {showLiabForm && <LiabilityForm key={editingLiab?.id || 'new-liab'} t={t} item={editingLiab} onSave={handleSaveLiability}
+          onDelete={id => setConfirmDelete({ type: 'liability', id })}
+          onCancel={() => { setShowLiabForm(false); setEditingLiab(null) }} />}
+      </div>
+
       {confirmDelete && (
         <div className="confirm-overlay" onClick={() => setConfirmDelete(null)}>
           <div className="confirm-box" onClick={e => e.stopPropagation()}>
-            <p>{t.confirmDelete}</p>
+            <p>{confirmDelete.type === 'liability' ? t.confirmDeleteLiab : t.confirmDelete}</p>
             <div className="confirm-actions">
               <button className="no" onClick={() => setConfirmDelete(null)}>{t.no}</button>
-              <button className="yes" onClick={() => handleDelete(confirmDelete)}>{t.yes}</button>
+              <button className="yes" onClick={() => {
+                if (confirmDelete.type === 'liability') handleDeleteLiability(confirmDelete.id)
+                else handleDelete(confirmDelete.id)
+              }}>{t.yes}</button>
             </div>
           </div>
         </div>
@@ -853,7 +1022,7 @@ function SmartForm({ t, item, onSave, onDelete, onCancel, onShowDividends, divid
           {/* Type chips inline */}
           <div className="form-group">
             <div className="type-chips">
-              {['stock', 'etf'].map(tp => (
+              {['stock', 'etf', 'fund'].map(tp => (
                 <button key={tp} className={`type-chip ${assetType === tp ? 'active' : ''}`}
                   onClick={() => setAssetType(tp)}>{t.assetTypes[tp]}</button>
               ))}
@@ -1002,6 +1171,112 @@ function DividendForm({ t, holding, onSave, onCancel }) {
           style={{ fontFamily: 'var(--mono)', fontSize: '1.1rem', fontWeight: 600, textAlign: 'center' }} />
       </div>
       <button className="btn-primary" onClick={handleSubmit}>{t.save}</button>
+      <button className="btn-outline" onClick={onCancel}>{t.cancel}</button>
+    </div>
+  )
+}
+
+// ─── Liability Form ───
+function LiabilityForm({ t, item, onSave, onDelete, onCancel }) {
+  const [liabType, setLiabType] = useState(item?.liability_type || 'mortgage')
+  const [name, setName] = useState(item?.name || '')
+  const [totalAmount, setTotalAmount] = useState(item?.total_amount?.toString() || '')
+  const [remainingAmount, setRemainingAmount] = useState(item?.remaining_amount?.toString() || '')
+  const [interestRate, setInterestRate] = useState(item?.interest_rate?.toString() || '')
+  const [monthlyPayment, setMonthlyPayment] = useState(item?.monthly_payment?.toString() || '')
+  const [currency, setCurrency] = useState(item?.currency || 'TWD')
+  const [startDate, setStartDate] = useState(item?.start_date || today())
+  const [endDate, setEndDate] = useState(item?.end_date || '')
+  const [note, setNote] = useState(item?.note || '')
+
+  const types = ['mortgage', 'personal_loan', 'car_loan', 'credit_card', 'student_loan', 'other']
+  const typeIcons = { mortgage: '🏠', personal_loan: '📄', car_loan: '🚗', credit_card: '💳', student_loan: '🎓', other: '📌' }
+
+  const handleSubmit = () => {
+    if (!remainingAmount || Number(remainingAmount) <= 0) return
+    onSave({
+      ...(item?.id ? { id: item.id } : {}),
+      liability_type: liabType,
+      name: name || t.liabilityTypes[liabType],
+      total_amount: Number(totalAmount) || Number(remainingAmount),
+      remaining_amount: Number(remainingAmount),
+      interest_rate: Number(interestRate) || 0,
+      monthly_payment: Number(monthlyPayment) || 0,
+      currency, start_date: startDate, end_date: endDate || null, note
+    })
+  }
+
+  return (
+    <div>
+      <div className="sheet-title">{item ? t.editLiability : t.addLiability}</div>
+
+      <div className="form-group">
+        <label className="form-label">{t.liabilityType}</label>
+        <div className="type-chips">
+          {types.map(tp => (
+            <button key={tp} className={`type-chip ${liabType === tp ? 'active' : ''}`}
+              onClick={() => setLiabType(tp)}>{typeIcons[tp]} {t.liabilityTypes[tp]}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">{t.name}</label>
+        <input className="form-input" placeholder={t.liabilityTypes[liabType]} value={name}
+          onChange={e => setName(e.target.value)} />
+      </div>
+
+      <div className="form-row">
+        <div className="form-group">
+          <label className="form-label">{t.totalAmount}</label>
+          <input className="form-input" type="number" inputMode="decimal" placeholder="5,000,000"
+            value={totalAmount} onChange={e => setTotalAmount(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">{t.remainingAmount}</label>
+          <input className="form-input" type="number" inputMode="decimal" placeholder="3,200,000"
+            value={remainingAmount} onChange={e => setRemainingAmount(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
+        </div>
+      </div>
+
+      <div className="form-row">
+        <div className="form-group">
+          <label className="form-label">{t.interestRate}</label>
+          <input className="form-input" type="number" inputMode="decimal" placeholder="2.1"
+            value={interestRate} onChange={e => setInterestRate(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">{t.monthlyPayment}</label>
+          <input className="form-input" type="number" inputMode="decimal" placeholder="18,000"
+            value={monthlyPayment} onChange={e => setMonthlyPayment(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
+        </div>
+      </div>
+
+      <div className="form-row">
+        <div className="form-group">
+          <label className="form-label">{t.currency}</label>
+          <select className="form-input" value={currency} onChange={e => setCurrency(e.target.value)}>
+            <option value="TWD">TWD</option><option value="USD">USD</option>
+          </select>
+        </div>
+        <div className="form-group">
+          <label className="form-label">{t.startDate}</label>
+          <input className="form-input" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">{t.endDate}（{t.optional}）</label>
+        <input className="form-input" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} />
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">{t.note}</label>
+        <input className="form-input" type="text" placeholder={t.note} value={note} onChange={e => setNote(e.target.value)} />
+      </div>
+
+      <button className="btn-primary" onClick={handleSubmit}>{t.save}</button>
+      {item && <button className="btn-danger" onClick={() => onDelete(item.id)}>🗑️ {t.delete}</button>}
       <button className="btn-outline" onClick={onCancel}>{t.cancel}</button>
     </div>
   )

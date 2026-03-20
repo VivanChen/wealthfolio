@@ -7,7 +7,7 @@ CREATE TABLE holdings (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_email TEXT NOT NULL,
   market TEXT NOT NULL CHECK (market IN ('us', 'tw', 'cash')),
-  asset_type TEXT NOT NULL CHECK (asset_type IN ('stock', 'etf', 'cash', 'deposit', 'bond')),
+  asset_type TEXT NOT NULL CHECK (asset_type IN ('stock', 'etf', 'fund', 'cash', 'deposit', 'bond')),
   ticker TEXT DEFAULT '',
   name TEXT DEFAULT '',
   shares NUMERIC DEFAULT 0,
@@ -113,3 +113,46 @@ CREATE POLICY "建立者可修改快照" ON snapshots
   FOR UPDATE USING (auth.jwt() ->> 'email' = user_email);
 
 ALTER PUBLICATION supabase_realtime ADD TABLE snapshots;
+
+-- ================================================
+-- Liabilities / 負債
+-- ================================================
+
+CREATE TABLE liabilities (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  liability_type TEXT NOT NULL CHECK (liability_type IN ('mortgage', 'personal_loan', 'car_loan', 'credit_card', 'student_loan', 'other')),
+  name TEXT NOT NULL DEFAULT '',
+  total_amount NUMERIC NOT NULL DEFAULT 0,
+  remaining_amount NUMERIC NOT NULL DEFAULT 0,
+  interest_rate NUMERIC DEFAULT 0,
+  monthly_payment NUMERIC DEFAULT 0,
+  currency TEXT DEFAULT 'TWD',
+  start_date DATE DEFAULT CURRENT_DATE,
+  end_date DATE,
+  note TEXT DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_liabilities_user ON liabilities (user_email);
+
+ALTER TABLE liabilities ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "只能檢視自己的負債" ON liabilities
+  FOR SELECT USING (auth.jwt() ->> 'email' = user_email);
+
+CREATE POLICY "只能新增自己的負債" ON liabilities
+  FOR INSERT WITH CHECK (auth.jwt() ->> 'email' = user_email);
+
+CREATE POLICY "建立者可修改負債" ON liabilities
+  FOR UPDATE USING (auth.jwt() ->> 'email' = user_email);
+
+CREATE POLICY "建立者可刪除負債" ON liabilities
+  FOR DELETE USING (auth.jwt() ->> 'email' = user_email);
+
+CREATE TRIGGER trigger_update_liabilities
+  BEFORE UPDATE ON liabilities
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+ALTER PUBLICATION supabase_realtime ADD TABLE liabilities;
