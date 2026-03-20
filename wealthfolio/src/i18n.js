@@ -95,6 +95,14 @@ export const T = {
     period: { '7d': '7天', '30d': '30天', '90d': '90天', all: '全部' },
     optional: '可選',
     autoDetect: '自動偵測市場',
+    // Fund
+    fundNameHint: '例: 柏瑞特別股息收益基金',
+    fundTickerHint: '如有 Yahoo 代號可填',
+    fundTickerDesc: '沒有代號可留空，系統不會自動抓報價',
+    fundUnits: '單位數',
+    fundAvgNav: '買入淨值',
+    fundCurrentNav: '目前淨值',
+    fundNavHint: '手動更新，用於計算損益',
     // Liabilities
     liabilities: '負債',
     addLiability: '新增負債',

@@ -42,7 +42,8 @@ function calcPortfolio(holdings, prices, usdTwd = 32, dividends = []) {
   const items = holdings.map(h => {
     const isStock = h.market !== 'cash'
     const priceData = prices[h.ticker]
-    const currentPrice = priceData?.price || h.avg_cost || 0
+    // For funds: use amount field as manual current NAV if no auto-price
+    const currentPrice = priceData?.price || (h.asset_type === 'fund' && h.amount > 0 ? h.amount : h.avg_cost) || 0
     const rate = h.currency === 'USD' ? usdTwd : 1
     const holdingDivs = dividends.filter(d => d.holding_id === h.id)
     const totalDiv = holdingDivs.reduce((s, d) => s + (Number(d.total_amount) || 0), 0)
@@ -931,13 +932,13 @@ function TrendChart({ t, data, period, setPeriod }) {
 }
 
 // ─── Smart Form (simplified) ───
-// Auto-detects market from ticker, fewer steps
 function SmartForm({ t, item, onSave, onDelete, onCancel, onShowDividends, dividendCount }) {
   const [mode, setMode] = useState(item?.market === 'cash' ? 'cash' : 'stock')
   const [ticker, setTicker] = useState(item?.ticker?.replace('.TW', '') || '')
   const [name, setName] = useState(item?.name || '')
   const [shares, setShares] = useState(item?.shares?.toString() || '')
   const [avgCost, setAvgCost] = useState(item?.avg_cost?.toString() || '')
+  const [currentNav, setCurrentNav] = useState(item?.asset_type === 'fund' && item?.amount > 0 ? item.amount.toString() : '')
   const [amount, setAmount] = useState(item?.amount?.toString() || '')
   const [currency, setCurrency] = useState(item?.currency || 'TWD')
   const [assetType, setAssetType] = useState(item?.asset_type || 'stock')
@@ -945,15 +946,16 @@ function SmartForm({ t, item, onSave, onDelete, onCancel, onShowDividends, divid
   const [buyDate, setBuyDate] = useState(item?.buy_date || today())
   const [note, setNote] = useState(item?.note || '')
 
-  const detectedMarket = detectMarket(ticker)
+  const isFund = assetType === 'fund'
+  const detectedMarket = isFund ? null : detectMarket(ticker)
   const cashTypes = ['cash', 'deposit', 'bond']
 
   useEffect(() => {
-    if (mode === 'stock') {
+    if (mode === 'stock' && !isFund) {
       if (detectedMarket === 'tw') setCurrency('TWD')
       else if (detectedMarket === 'us') setCurrency('USD')
     }
-  }, [ticker, mode])
+  }, [ticker, mode, isFund])
 
   const handleSubmit = () => {
     if (mode === 'cash') {
@@ -961,7 +963,16 @@ function SmartForm({ t, item, onSave, onDelete, onCancel, onShowDividends, divid
       onSave({ ...(item?.id ? { id: item.id } : {}), market: 'cash', asset_type: assetType,
         ticker: '', name: name || t.assetTypes[assetType], shares: 0, avg_cost: 0,
         amount: Number(amount), currency, interest_rate: Number(interestRate) || 0, buy_date: buyDate, note })
+    } else if (isFund) {
+      // Fund: name required, ticker optional, amount stores current NAV
+      if (!name || !shares || !avgCost) return
+      const market = currency === 'TWD' ? 'tw' : 'us'
+      onSave({ ...(item?.id ? { id: item.id } : {}), market, asset_type: 'fund',
+        ticker: ticker ? ticker.toUpperCase() : '', name,
+        shares: Number(shares), avg_cost: Number(avgCost),
+        amount: Number(currentNav) || 0, currency, interest_rate: 0, buy_date: buyDate, note })
     } else {
+      // Stock / ETF
       if (!ticker || !shares || !avgCost) return
       const market = detectedMarket || 'us'
       const tickerFmt = market === 'tw' && !ticker.includes('.') ? `${ticker}.TW` : ticker.toUpperCase()
@@ -978,48 +989,14 @@ function SmartForm({ t, item, onSave, onDelete, onCancel, onShowDividends, divid
       {/* Stock vs Cash toggle */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         <button className={`type-chip ${mode === 'stock' ? 'active' : ''}`} style={{ flex: 1, textAlign: 'center' }}
-          onClick={() => { setMode('stock'); setAssetType('stock') }}>📈 {t.markets.us} / {t.markets.tw}</button>
+          onClick={() => { setMode('stock'); if (cashTypes.includes(assetType)) setAssetType('stock') }}>📈 {t.markets.us} / {t.markets.tw}</button>
         <button className={`type-chip ${mode === 'cash' ? 'active' : ''}`} style={{ flex: 1, textAlign: 'center' }}
           onClick={() => { setMode('cash'); setAssetType('cash') }}>💵 {t.markets.cash}</button>
       </div>
 
       {mode === 'stock' ? (
         <>
-          {/* Smart ticker input */}
-          <div className="form-group">
-            <label className="form-label">{t.ticker}</label>
-            <div className="ticker-wrapper">
-              <input className="form-input" placeholder={t.tickerHint} value={ticker}
-                onChange={e => setTicker(e.target.value.toUpperCase())}
-                style={{ fontFamily: 'var(--mono)', fontSize: '1rem', fontWeight: 600, paddingRight: 70 }} />
-              {detectedMarket && (
-                <span className={`detect-badge ${detectedMarket}`}>
-                  {detectedMarket === 'tw' ? '🇹🇼 台股' : '🇺🇸 美股'}
-                </span>
-              )}
-            </div>
-            <div className="form-hint">{t.tickerHint} — {t.autoDetect}</div>
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">{t.name}（{t.optional}）</label>
-            <input className="form-input" placeholder="Apple Inc." value={name} onChange={e => setName(e.target.value)} />
-          </div>
-
-          <div className="form-row">
-            <div className="form-group">
-              <label className="form-label">{t.shares}</label>
-              <input className="form-input" type="number" inputMode="decimal" placeholder="100" value={shares}
-                onChange={e => setShares(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
-            </div>
-            <div className="form-group">
-              <label className="form-label">{t.avgCost} ({currency})</label>
-              <input className="form-input" type="number" inputMode="decimal" placeholder="150.00" value={avgCost}
-                onChange={e => setAvgCost(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
-            </div>
-          </div>
-
-          {/* Type chips inline */}
+          {/* Type chips — moved to top so fund mode changes the form below */}
           <div className="form-group">
             <div className="type-chips">
               {['stock', 'etf', 'fund'].map(tp => (
@@ -1028,6 +1005,108 @@ function SmartForm({ t, item, onSave, onDelete, onCancel, onShowDividends, divid
               ))}
             </div>
           </div>
+
+          {isFund ? (
+            /* ─── Fund Mode ─── */
+            <>
+              <div className="form-group">
+                <label className="form-label">{t.name} *</label>
+                <input className="form-input" placeholder={t.fundNameHint} value={name}
+                  onChange={e => setName(e.target.value)} />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">{t.ticker}（{t.optional}）</label>
+                <input className="form-input" placeholder={t.fundTickerHint} value={ticker}
+                  onChange={e => setTicker(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
+                <div className="form-hint">{t.fundTickerDesc}</div>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">{t.fundUnits}</label>
+                  <input className="form-input" type="number" inputMode="decimal" placeholder="467289" value={shares}
+                    onChange={e => setShares(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">{t.currency}</label>
+                  <select className="form-input" value={currency} onChange={e => setCurrency(e.target.value)}>
+                    <option value="TWD">TWD（台幣計價）</option>
+                    <option value="USD">USD（美元計價）</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">{t.fundAvgNav}</label>
+                  <input className="form-input" type="number" inputMode="decimal" placeholder="6.54" value={avgCost}
+                    onChange={e => setAvgCost(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">{t.fundCurrentNav}</label>
+                  <input className="form-input" type="number" inputMode="decimal" placeholder="7.12" value={currentNav}
+                    onChange={e => setCurrentNav(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
+                  <div className="form-hint">{t.fundNavHint}</div>
+                </div>
+              </div>
+
+              {currentNav && avgCost && shares && (
+                <div style={{ background: 'var(--surface2)', borderRadius: 'var(--radius-sm)', padding: '10px 14px', marginBottom: 14, fontSize: '.78rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text2)' }}>
+                    <span>{t.cost}</span>
+                    <span style={{ fontFamily: 'var(--mono)' }}>{fmtMoney(Number(shares) * Number(avgCost), CURRENCIES[currency]?.symbol || '$')}</span>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text2)', marginTop: 4 }}>
+                    <span>{t.totalValue}</span>
+                    <span style={{ fontFamily: 'var(--mono)' }}>{fmtMoney(Number(shares) * Number(currentNav), CURRENCIES[currency]?.symbol || '$')}</span>
+                  </div>
+                  {(() => { const g = (Number(currentNav) - Number(avgCost)) * Number(shares); const gp = Number(avgCost) > 0 ? ((Number(currentNav) / Number(avgCost)) - 1) * 100 : 0
+                    return <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4, color: g >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                      <span>{t.gain}</span>
+                      <span style={{ fontFamily: 'var(--mono)' }}>{g >= 0 ? '+' : ''}{fmtMoney(g, CURRENCIES[currency]?.symbol || '$')} ({gp >= 0 ? '+' : ''}{gp.toFixed(1)}%)</span>
+                    </div>
+                  })()}
+                </div>
+              )}
+            </>
+          ) : (
+            /* ─── Stock / ETF Mode ─── */
+            <>
+              <div className="form-group">
+                <label className="form-label">{t.ticker}</label>
+                <div className="ticker-wrapper">
+                  <input className="form-input" placeholder={t.tickerHint} value={ticker}
+                    onChange={e => setTicker(e.target.value.toUpperCase())}
+                    style={{ fontFamily: 'var(--mono)', fontSize: '1rem', fontWeight: 600, paddingRight: 70 }} />
+                  {detectedMarket && (
+                    <span className={`detect-badge ${detectedMarket}`}>
+                      {detectedMarket === 'tw' ? '🇹🇼 台股' : '🇺🇸 美股'}
+                    </span>
+                  )}
+                </div>
+                <div className="form-hint">{t.tickerHint} — {t.autoDetect}</div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">{t.name}（{t.optional}）</label>
+                <input className="form-input" placeholder="Apple Inc." value={name} onChange={e => setName(e.target.value)} />
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">{t.shares}</label>
+                  <input className="form-input" type="number" inputMode="decimal" placeholder="100" value={shares}
+                    onChange={e => setShares(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">{t.avgCost} ({currency})</label>
+                  <input className="form-input" type="number" inputMode="decimal" placeholder="150.00" value={avgCost}
+                    onChange={e => setAvgCost(e.target.value)} style={{ fontFamily: 'var(--mono)' }} />
+                </div>
+              </div>
+            </>
+          )}
         </>
       ) : (
         <>
