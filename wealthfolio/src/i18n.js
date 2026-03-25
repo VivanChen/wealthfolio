@@ -138,6 +138,29 @@ export const T = {
     monthlyLoanPayment: '月付貸款支出',
     netCashFlow: '淨現金流',
     debtToAsset: '負債比',
+    // Monthly budget
+    budget: '每月收支',
+    monthlyIncome: '月收入',
+    monthlyExpense: '月支出',
+    addBudget: '新增項目',
+    editBudget: '編輯項目',
+    budgetType: '類型',
+    budgetTypes: { income: '收入', expense: '支出' },
+    incomeCategories: {
+      salary: '薪資', rental: '租金收入', side_income: '副業收入',
+      investment: '投資收益', other_income: '其他收入'
+    },
+    expenseCategories: {
+      rent: '房租', utilities: '水電瓦斯', food: '餐飲',
+      transport: '交通', insurance: '保險', education: '教育',
+      entertainment: '娛樂', telecom: '通訊', daily: '日用品',
+      medical: '醫療', clothing: '服飾', other_expense: '其他'
+    },
+    noBudget: '尚無收支項目，點擊 + 開始記錄',
+    confirmDeleteBudget: '確認刪除此收支項目？',
+    netMonthlyCashFlow: '每月淨現金流',
+    budgetSummary: '收支摘要',
+    surplus: '結餘',
   }
 }
 

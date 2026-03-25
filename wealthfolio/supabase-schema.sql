@@ -156,3 +156,42 @@ CREATE TRIGGER trigger_update_liabilities
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
 ALTER PUBLICATION supabase_realtime ADD TABLE liabilities;
+
+-- ================================================
+-- Monthly Budget / 每月收支
+-- ================================================
+
+CREATE TABLE monthly_budget (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_email TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+  category TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  amount NUMERIC NOT NULL DEFAULT 0,
+  currency TEXT DEFAULT 'TWD',
+  note TEXT DEFAULT '',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_budget_user ON monthly_budget (user_email);
+
+ALTER TABLE monthly_budget ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "只能檢視自己的收支" ON monthly_budget
+  FOR SELECT USING (auth.jwt() ->> 'email' = user_email);
+
+CREATE POLICY "只能新增自己的收支" ON monthly_budget
+  FOR INSERT WITH CHECK (auth.jwt() ->> 'email' = user_email);
+
+CREATE POLICY "建立者可修改收支" ON monthly_budget
+  FOR UPDATE USING (auth.jwt() ->> 'email' = user_email);
+
+CREATE POLICY "建立者可刪除收支" ON monthly_budget
+  FOR DELETE USING (auth.jwt() ->> 'email' = user_email);
+
+CREATE TRIGGER trigger_update_budget
+  BEFORE UPDATE ON monthly_budget
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at();
+
+ALTER PUBLICATION supabase_realtime ADD TABLE monthly_budget;

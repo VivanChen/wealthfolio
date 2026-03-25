@@ -36,6 +36,7 @@ const LS_KEY = 'wf_holdings'
 const LS_DIV = 'wf_dividends'
 const LS_SNAP = 'wf_snapshots'
 const LS_LIAB = 'wf_liabilities'
+const LS_BUDGET = 'wf_budget'
 const LS_PRICES = 'wf_prices'
 const loadLS = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d } catch { return d } }
 const saveLS = (k, v) => localStorage.setItem(k, JSON.stringify(v))
@@ -391,6 +392,7 @@ export default function App() {
   const [holdings, setHoldings] = useState([])
   const [dividends, setDividends] = useState([])
   const [liabilities, setLiabilities] = useState([])
+  const [budget, setBudget] = useState([])
   const [snapshots, setSnapshots] = useState([])
   const [trendPeriod, setTrendPeriod] = useState('30d')
   const [prices, setPrices] = useState(() => loadLS(LS_PRICES, {}))
@@ -399,6 +401,8 @@ export default function App() {
   const [editingItem, setEditingItem] = useState(null)
   const [showLiabForm, setShowLiabForm] = useState(false)
   const [editingLiab, setEditingLiab] = useState(null)
+  const [showBudgetForm, setShowBudgetForm] = useState(false)
+  const [editingBudget, setEditingBudget] = useState(null)
   const [showDivForm, setShowDivForm] = useState(false)
   const [divFormHolding, setDivFormHolding] = useState(null)
   const [showHoldingDetail, setShowHoldingDetail] = useState(null)
@@ -412,7 +416,7 @@ export default function App() {
   useEffect(() => {
     if (isDemoMode) {
       setAuthChecked(true); setUser({ email: 'demo' })
-      setHoldings(loadLS(LS_KEY, [])); setDividends(loadLS(LS_DIV, [])); setSnapshots(loadLS(LS_SNAP, [])); setLiabilities(loadLS(LS_LIAB, []))
+      setHoldings(loadLS(LS_KEY, [])); setDividends(loadLS(LS_DIV, [])); setSnapshots(loadLS(LS_SNAP, [])); setLiabilities(loadLS(LS_LIAB, [])); setBudget(loadLS(LS_BUDGET, []))
       return
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -446,12 +450,18 @@ export default function App() {
         .eq('user_email', email).order('created_at', { ascending: false })
       if (data) setLiabilities(data)
     }
-    f1(); f2(); f3(); f4()
+    const f5 = async () => {
+      const { data } = await supabase.from('monthly_budget').select('*')
+        .eq('user_email', email).order('created_at', { ascending: false })
+      if (data) setBudget(data)
+    }
+    f1(); f2(); f3(); f4(); f5()
     // Realtime — only listen to this user's changes
     const ch = supabase.channel(`user_${email}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'holdings', filter: `user_email=eq.${email}` }, () => f1())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'dividends', filter: `user_email=eq.${email}` }, () => f2())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'liabilities', filter: `user_email=eq.${email}` }, () => f4())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'monthly_budget', filter: `user_email=eq.${email}` }, () => f5())
       .subscribe()
     return () => supabase.removeChannel(ch)
   }, [user])
@@ -575,7 +585,25 @@ export default function App() {
   const handleDeleteLiability = async (id) => {
     if (isDemoMode) { const up = liabilities.filter(l => l.id !== id); setLiabilities(up); saveLS(LS_LIAB, up) }
     else await supabase.from('liabilities').delete().eq('id', id)
-    setShowLiabForm(false); setEditingLiab(null)
+    setConfirmDelete(null); setShowLiabForm(false); setEditingLiab(null)
+  }
+
+  // Budget CRUD
+  const handleSaveBudget = async (item) => {
+    if (isDemoMode) {
+      let up; if (item.id && budget.find(b => b.id === item.id)) up = budget.map(b => b.id === item.id ? { ...b, ...item } : b)
+      else up = [{ ...item, id: genId(), user_email: 'demo', created_at: new Date().toISOString() }, ...budget]
+      setBudget(up); saveLS(LS_BUDGET, up)
+    } else {
+      if (item.id) await supabase.from('monthly_budget').update(item).eq('id', item.id)
+      else await supabase.from('monthly_budget').insert({ ...item, user_email: user.email })
+    }
+    setShowBudgetForm(false); setEditingBudget(null)
+  }
+  const handleDeleteBudget = async (id) => {
+    if (isDemoMode) { const up = budget.filter(b => b.id !== id); setBudget(up); saveLS(LS_BUDGET, up) }
+    else await supabase.from('monthly_budget').delete().eq('id', id)
+    setConfirmDelete(null); setShowBudgetForm(false); setEditingBudget(null)
   }
 
   // Net worth & cash flow
@@ -603,6 +631,17 @@ export default function App() {
     const months = Math.max(1, (Date.now() - dates[0].getTime()) / (30 * 86400000))
     return portfolio.totalDivTWD / months
   }, [dividends, portfolio])
+
+  // Budget-based cash flow
+  const budgetIncome = useMemo(() =>
+    budget.filter(b => b.type === 'income').reduce((s, b) => s + (Number(b.amount) || 0) * (b.currency === 'USD' ? usdTwd : 1), 0)
+  , [budget, usdTwd])
+  const budgetExpense = useMemo(() =>
+    budget.filter(b => b.type === 'expense').reduce((s, b) => s + (Number(b.amount) || 0) * (b.currency === 'USD' ? usdTwd : 1), 0)
+  , [budget, usdTwd])
+  const totalMonthlyIncome = budgetIncome + monthlyDivIncome
+  const totalMonthlyExpense = budgetExpense + monthlyPayments
+  const netMonthlyCashFlow = totalMonthlyIncome - totalMonthlyExpense
 
   const debtToAsset = portfolio.totalValueTWD > 0 ? totalLiabTWD / portfolio.totalValueTWD : 0
 
@@ -632,7 +671,16 @@ export default function App() {
       const summary = { total_value_twd: Math.round(portfolio.totalValueTWD), total_gain_pct: (portfolio.totalGainPct * 100).toFixed(1) + '%', usd_twd_rate: usdTwd,
         total_liabilities_twd: Math.round(totalLiabTWD), net_worth_twd: Math.round(netWorth),
         debt_to_asset_ratio: (debtToAsset * 100).toFixed(1) + '%',
-        monthly_loan_payments_twd: Math.round(monthlyPayments),
+        monthly_cash_flow: {
+          total_income_twd: Math.round(totalMonthlyIncome),
+          budget_income_twd: Math.round(budgetIncome),
+          dividend_income_twd: Math.round(monthlyDivIncome),
+          total_expense_twd: Math.round(totalMonthlyExpense),
+          budget_expense_twd: Math.round(budgetExpense),
+          loan_payments_twd: Math.round(monthlyPayments),
+          net_cash_flow_twd: Math.round(netMonthlyCashFlow),
+        },
+        budget_items: budget.map(b => ({ type: b.type, category: b.category, name: b.name, amount: b.amount, currency: b.currency })),
         liabilities: liabilities.map(l => ({ name: l.name, type: l.liability_type, remaining: l.remaining_amount, rate: l.interest_rate + '%', monthly: l.monthly_payment })),
         holdings: portfolio.items.map(i => ({ name: i.name || i.ticker, market: i.market, type: i.asset_type, value_twd: Math.round(i.valueTWD), weight: (i.weight * 100).toFixed(1) + '%', gain_pct: (i.gainPct * 100).toFixed(1) + '%', currency: i.currency })) }
       const res = await fetch('/api/ai-advice', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ portfolio: summary, lang }) })
@@ -655,8 +703,17 @@ export default function App() {
       [t.gainPct, (portfolio.totalGainPct * 100).toFixed(1) + '%'],
       [t.totalDividends, Math.round(portfolio.totalDivTWD)],
       [t.totalLiabilities, Math.round(totalLiabTWD)],
-      [t.monthlyLoanPayment, Math.round(monthlyPayments)],
       [t.debtToAsset, (debtToAsset * 100).toFixed(1) + '%'],
+      ['', ''],
+      [t.budgetSummary, ''],
+      [t.monthlyIncome, Math.round(totalMonthlyIncome)],
+      ['  ' + t.budgetTypes.income, Math.round(budgetIncome)],
+      ['  ' + t.monthlyDividend, Math.round(monthlyDivIncome)],
+      [t.monthlyExpense, Math.round(totalMonthlyExpense)],
+      ['  ' + t.budgetTypes.expense, Math.round(budgetExpense)],
+      ['  ' + t.monthlyLoanPayment, Math.round(monthlyPayments)],
+      [t.netMonthlyCashFlow, Math.round(netMonthlyCashFlow)],
+      ['', ''],
       ['USD/TWD', usdTwd.toFixed(2)],
       [t.lastUpdate, today()],
     ]
@@ -697,6 +754,17 @@ export default function App() {
         [t.note]: l.note || '',
       }))
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lr), safeSheet(t.liabilities))
+    }
+
+    // Sheet 5: Monthly Budget
+    if (budget.length) {
+      const br = budget.map(b => ({
+        [t.budgetType]: t.budgetTypes[b.type],
+        [t.budgetType + '分類']: (b.type === 'income' ? t.incomeCategories[b.category] : t.expenseCategories[b.category]) || b.category,
+        [t.name]: b.name, [t.amount]: b.amount, [t.currency]: b.currency,
+        [t.note]: b.note || '',
+      }))
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(br), safeSheet(t.budget))
     }
 
     XLSX.writeFile(wb, `wealthfolio_${today()}.xlsx`)
@@ -742,6 +810,14 @@ export default function App() {
               <div className={`val ${portfolio.totalGainTWD >= 0 ? 'up' : 'down'}`}>{portfolio.totalGainTWD >= 0 ? '+' : ''}{fmtMoney(portfolio.totalGainTWD, 'NT$')}</div></div>
           </div>
           {/* Cash flow row */}
+          <div className="stats s1 fade-up">
+            <div className="stat"><div className="label">📥 {t.monthlyIncome}</div>
+              <div className="val up">{fmtMoney(totalMonthlyIncome, 'NT$')}</div></div>
+            <div className="stat"><div className="label">📤 {t.monthlyExpense}</div>
+              <div className="val down">-{fmtMoney(totalMonthlyExpense, 'NT$')}</div></div>
+            <div className="stat"><div className="label">{t.netMonthlyCashFlow}</div>
+              <div className={`val ${netMonthlyCashFlow >= 0 ? 'up' : 'down'}`}>{netMonthlyCashFlow >= 0 ? '+' : ''}{fmtMoney(netMonthlyCashFlow, 'NT$')}</div></div>
+          </div>
           <div className="stats s1 fade-up">
             <div className="stat"><div className="label">🎁 {t.monthlyDividend}</div>
               <div className="val gold">{fmtMoney(monthlyDivIncome, 'NT$')}</div></div>
@@ -794,6 +870,53 @@ export default function App() {
                 </div>
               </div>
             ))}
+          </div>
+
+          {/* Monthly Budget Section */}
+          <div className="section-header" style={{ marginTop: 8 }}>
+            <h2>📋 {t.budget}</h2>
+            <button className="div-add-btn" onClick={() => { setEditingBudget(null); setShowBudgetForm(true) }}>+ {t.addBudget}</button>
+          </div>
+          {budget.length > 0 && (
+            <div style={{ display: 'flex', gap: 8, padding: '0 16px 8px' }}>
+              <div style={{ flex: 1, background: 'var(--surface)', borderRadius: 'var(--radius-sm)', padding: '8px 12px', fontSize: '.75rem' }}>
+                <div style={{ color: 'var(--text3)' }}>📥 {t.monthlyIncome}</div>
+                <div style={{ fontFamily: 'var(--mono)', color: '#34d399', fontWeight: 600, marginTop: 2 }}>{fmtMoney(budgetIncome, 'NT$')}</div>
+              </div>
+              <div style={{ flex: 1, background: 'var(--surface)', borderRadius: 'var(--radius-sm)', padding: '8px 12px', fontSize: '.75rem' }}>
+                <div style={{ color: 'var(--text3)' }}>📤 {t.monthlyExpense}</div>
+                <div style={{ fontFamily: 'var(--mono)', color: '#fb7185', fontWeight: 600, marginTop: 2 }}>-{fmtMoney(budgetExpense, 'NT$')}</div>
+              </div>
+            </div>
+          )}
+          <div className="holdings">
+            {budget.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '20px', color: 'var(--text3)', fontSize: '.82rem' }}>{t.noBudget}</div>
+            ) : budget.map(b => {
+              const sym = CURRENCIES[b.currency]?.symbol || 'NT$'
+              const isIncome = b.type === 'income'
+              const catLabel = isIncome ? (t.incomeCategories[b.category] || b.category) : (t.expenseCategories[b.category] || b.category)
+              return (
+                <div className="h-card" key={b.id} onClick={() => { setEditingBudget(b); setShowBudgetForm(true) }}>
+                  <div className="h-icon" style={{ background: isIncome ? 'rgba(52,211,153,.15)' : 'rgba(251,113,133,.15)', fontSize: '.9rem' }}>
+                    {isIncome ? '📥' : '📤'}
+                  </div>
+                  <div className="h-body">
+                    <div className="h-name">{b.name || catLabel}</div>
+                    <div className="h-meta">
+                      <span className="h-ticker">{catLabel}</span>
+                      <span className="h-ticker">{t.budgetTypes[b.type]}</span>
+                    </div>
+                  </div>
+                  <div className="h-right">
+                    <div className="h-value" style={{ color: isIncome ? '#34d399' : '#fb7185' }}>
+                      {isIncome ? '+' : '-'}{fmtMoney(b.amount, sym)}
+                    </div>
+                    <div className="h-pct">{t.budgetTypes[b.type]}</div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
 
           {/* Liabilities Section */}
@@ -932,14 +1055,25 @@ export default function App() {
           onCancel={() => { setShowLiabForm(false); setEditingLiab(null) }} />}
       </div>
 
+      {/* Budget Form */}
+      <div className={`overlay ${showBudgetForm ? 'open' : ''}`} onClick={() => { setShowBudgetForm(false); setEditingBudget(null) }} />
+      <div className={`sheet ${showBudgetForm ? 'open' : ''}`}>
+        <div className="sheet-handle" />
+        {showBudgetForm && <BudgetForm key={editingBudget?.id || 'new-budget'} t={t} item={editingBudget}
+          onSave={handleSaveBudget}
+          onDelete={id => setConfirmDelete({ type: 'budget', id })}
+          onCancel={() => { setShowBudgetForm(false); setEditingBudget(null) }} />}
+      </div>
+
       {confirmDelete && (
         <div className="confirm-overlay" onClick={() => setConfirmDelete(null)}>
           <div className="confirm-box" onClick={e => e.stopPropagation()}>
-            <p>{confirmDelete.type === 'liability' ? t.confirmDeleteLiab : t.confirmDelete}</p>
+            <p>{confirmDelete.type === 'liability' ? t.confirmDeleteLiab : confirmDelete.type === 'budget' ? t.confirmDeleteBudget : t.confirmDelete}</p>
             <div className="confirm-actions">
               <button className="no" onClick={() => setConfirmDelete(null)}>{t.no}</button>
               <button className="yes" onClick={() => {
                 if (confirmDelete.type === 'liability') handleDeleteLiability(confirmDelete.id)
+                else if (confirmDelete.type === 'budget') handleDeleteBudget(confirmDelete.id)
                 else handleDelete(confirmDelete.id)
               }}>{t.yes}</button>
             </div>
@@ -1543,6 +1677,93 @@ function LiabilityForm({ t, item, onSave, onDelete, onCancel }) {
       <div className="form-group">
         <label className="form-label">{t.endDate}（{t.optional}）</label>
         <input className="form-input" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} />
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">{t.note}</label>
+        <input className="form-input" type="text" placeholder={t.note} value={note} onChange={e => setNote(e.target.value)} />
+      </div>
+
+      <button className="btn-primary" onClick={handleSubmit}>{t.save}</button>
+      {item && <button className="btn-danger" onClick={() => onDelete(item.id)}>🗑️ {t.delete}</button>}
+      <button className="btn-outline" onClick={onCancel}>{t.cancel}</button>
+    </div>
+  )
+}
+
+// ─── Budget Form ───
+function BudgetForm({ t, item, onSave, onDelete, onCancel }) {
+  const [budgetType, setBudgetType] = useState(item?.type || 'expense')
+  const [category, setCategory] = useState(item?.category || (item?.type === 'income' ? 'salary' : 'rent'))
+  const [name, setName] = useState(item?.name || '')
+  const [amount, setAmount] = useState(item?.amount?.toString() || '')
+  const [currency, setCurrency] = useState(item?.currency || 'TWD')
+  const [note, setNote] = useState(item?.note || '')
+
+  const incomeKeys = Object.keys(t.incomeCategories)
+  const expenseKeys = Object.keys(t.expenseCategories)
+  const categories = budgetType === 'income' ? incomeKeys : expenseKeys
+  const catLabels = budgetType === 'income' ? t.incomeCategories : t.expenseCategories
+
+  useEffect(() => {
+    if (!item) {
+      setCategory(budgetType === 'income' ? 'salary' : 'rent')
+    }
+  }, [budgetType])
+
+  const handleSubmit = () => {
+    if (!amount || Number(amount) <= 0) return
+    onSave({
+      ...(item?.id ? { id: item.id } : {}),
+      type: budgetType, category,
+      name: name || catLabels[category] || category,
+      amount: Number(amount), currency, note,
+    })
+  }
+
+  return (
+    <div>
+      <div className="sheet-title">{item ? t.editBudget : t.addBudget}</div>
+
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+        <button className={`type-chip ${budgetType === 'income' ? 'active' : ''}`}
+          style={{ flex: 1, textAlign: 'center', borderColor: budgetType === 'income' ? '#34d399' : undefined,
+            background: budgetType === 'income' ? 'rgba(52,211,153,.15)' : undefined }}
+          onClick={() => setBudgetType('income')}>📥 {t.budgetTypes.income}</button>
+        <button className={`type-chip ${budgetType === 'expense' ? 'active' : ''}`}
+          style={{ flex: 1, textAlign: 'center', borderColor: budgetType === 'expense' ? '#fb7185' : undefined,
+            background: budgetType === 'expense' ? 'rgba(251,113,133,.15)' : undefined }}
+          onClick={() => setBudgetType('expense')}>📤 {t.budgetTypes.expense}</button>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">{budgetType === 'income' ? t.budgetTypes.income : t.budgetTypes.expense}</label>
+        <div className="type-chips" style={{ flexWrap: 'wrap' }}>
+          {categories.map(cat => (
+            <button key={cat} className={`type-chip ${category === cat ? 'active' : ''}`}
+              onClick={() => setCategory(cat)}>{catLabels[cat]}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label className="form-label">{t.name}</label>
+        <input className="form-input" placeholder={catLabels[category] || ''} value={name}
+          onChange={e => setName(e.target.value)} />
+      </div>
+
+      <div className="form-row">
+        <div className="form-group">
+          <label className="form-label">{t.amount}</label>
+          <input className="form-input" type="number" inputMode="decimal" placeholder="25,000" value={amount}
+            onChange={e => setAmount(e.target.value)} style={{ fontFamily: 'var(--mono)', fontSize: '1.1rem', fontWeight: 600 }} />
+        </div>
+        <div className="form-group">
+          <label className="form-label">{t.currency}</label>
+          <select className="form-input" value={currency} onChange={e => setCurrency(e.target.value)}>
+            <option value="TWD">TWD</option><option value="USD">USD</option>
+          </select>
+        </div>
       </div>
 
       <div className="form-group">
